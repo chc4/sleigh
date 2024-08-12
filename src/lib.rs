@@ -8,13 +8,42 @@ pub mod sla;
 pub type Opcode = sleigh_sys::Opcode;
 pub type SpaceType = sleigh_sys::SpaceType;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AddrSpace {
-    pub name: String,
+    pub index: i32,
     pub type_: SpaceType,
 }
 
-#[derive(Debug)]
+impl std::hash::Hash for AddrSpace {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_i32(self.index);
+    }
+}
+
+impl PartialEq for AddrSpace {
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index
+    }
+}
+
+impl Eq for AddrSpace {}
+
+impl From<&sleigh_sys::ffi::AddrSpace> for AddrSpace {
+    fn from(space: &sleigh_sys::ffi::AddrSpace) -> Self {
+        let space = unsafe {
+            let _space = &*space;
+            let t = sleigh_sys::ffi::getAddrSpaceType(_space);
+            let type_ = sleigh_sys::SpaceType::from_u32(t).unwrap();
+            let index = _space.getIndex();
+            let name = _space.getName().to_string();
+            let trans = _space.getTrans();
+            AddrSpace { index, type_ }
+        };
+        space
+    }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct VarnodeData {
     pub space: AddrSpace,
     pub offset: u64,
@@ -26,23 +55,23 @@ impl From<&sleigh_sys::ffi::VarnodeData> for VarnodeData {
         let address = sleigh_sys::ffi::getVarnodeDataAddress(var);
         let offset = address.getOffset();
         let space = address.getSpace();
-        let space = unsafe {
-            let space = &*space;
-            let t = sleigh_sys::ffi::getAddrSpaceType(space);
-            let type_ = sleigh_sys::SpaceType::from_u32(t).unwrap();
-            let name = space.getName().to_string();
-            AddrSpace { name, type_ }
-        };
         let size = sleigh_sys::ffi::getVarnodeSize(var);
+        let reg = unsafe {
+            sleigh_sys::ffi::owningGetRegisterName(
+                space.as_ref().unwrap().getTrans(),
+                space,
+                offset,
+                size as i32)
+        };
         Self {
-            space,
+            space: unsafe { AddrSpace::from(&*space) },
             offset,
             size,
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct PCode {
     pub address: u64,
     pub opcode: Opcode,
@@ -84,9 +113,11 @@ impl sleigh_sys::PCodeEmit for PCodeEmit {
         address: &sleigh_sys::ffi::Address,
         opcode: sleigh_sys::Opcode,
         outvar: Option<&sleigh_sys::ffi::VarnodeData>,
-        vars: &[sleigh_sys::ffi::VarnodeData],
+        vars: &[&sleigh_sys::ffi::VarnodeData],
     ) {
-        let vars = vars.iter().map(VarnodeData::from).collect::<Vec<_>>();
+        let vars = vars.iter().map(|v| {
+            VarnodeData::from(*v)
+        }).collect::<Vec<_>>();
         let outvar = outvar.map(VarnodeData::from);
         let address = address.getOffset();
         let pcode = PCode {
@@ -346,7 +377,53 @@ impl Decompiler {
             (n as usize, emit.insts)
         }
     }
+
+    pub fn get_register<'a>(&self, reg: impl Into<&'a str>) -> VarnodeData {
+        unsafe {
+            let_cxx_string!(reg = reg.into());
+            self.inner.getRegisterByName(reg.as_ref().get_ref()).into()
+        }
+    }
+
+    pub fn get_address_space(&self, spaceid: i32) -> AddrSpace {
+        unsafe {
+            let addrspace = self.inner.getAddressSpace(spaceid);
+            AddrSpace::from(addrspace.as_ref().unwrap())
+        }
+    }
+
+    pub fn get_address_space_by_name<'a>(&self, space: impl Into<&'a str>) -> AddrSpace {
+        let_cxx_string!(space = space.into());
+        unsafe {
+            let addrspace = self.inner.getAddressSpaceByName(&space);
+            AddrSpace::from(addrspace.as_ref().unwrap())
+        }
+    }
+
+    pub fn pretty_reg(&self, reg: &VarnodeData) -> String {
+        let addrspace = unsafe { self.inner.getAddressSpace(reg.space.index) };
+        let reg = unsafe {
+            sleigh_sys::ffi::owningGetRegisterName(
+                self.inner.as_ref().unwrap() as *const _ as *const _,
+                addrspace,
+                reg.offset,
+                reg.size as i32)
+        };
+        format!("{}", reg)
+    }
+
+    pub fn format_varnode(&self, node: &VarnodeData) -> String {
+        let reg_str = self.pretty_reg(node);
+        let addr_name = unsafe {
+            self.inner.getAddressSpace(node.space.index).as_ref().unwrap().getName() };
+        if reg_str.len() != 0 {
+            format!("{}:{}", addr_name, reg_str)
+        } else {
+            format!("{}:{:x}", addr_name, node.offset)
+        }
+    }
 }
+
 
 #[cfg(test)]
 mod tests {

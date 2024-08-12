@@ -10,7 +10,7 @@ repository = "https://github.com/black-binary/sleigh/"
 
 [dependencies]
 #sleigh-sys = { path = "../sleigh-sys" }
-sleigh-sys = "0.1"
+sleigh-sys = { version = "0.1", path = "../sleigh-sys" }
 cxx = "1.0"
 lzma-rs = "0.2"
 lazy_static = "1.4"
